@@ -1,7 +1,8 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{ffi::CString, fs, path::{Path, PathBuf}};
 
-use egui::{accesskit::Tree, Stroke};
+use egui::Stroke;
 use egui_file_dialog::FileDialog;
+use pyo3::prelude::*;
 
 #[derive(PartialEq)]
 enum Tab {
@@ -25,9 +26,11 @@ pub struct TemplateApp { // Attempts to load this state if possible
 
     #[serde(skip)] // This how you opt-out of serialization of a field
     current_tab: Tab,
+
+    #[serde(skip)] 
     code_editor_content: String,
 
-
+    last_opened_file: Option<PathBuf>,
     project_directory: Option<PathBuf>,
     resource_search_term: String,
 }
@@ -38,8 +41,8 @@ impl Default for TemplateApp { // Fallback State
             file_dialog: FileDialog::new(),
 
             code_editor_content: "# Hello world!".into(),
+            last_opened_file: None,
             current_tab: Tab::Viewport,
-
 
             project_directory: None,
             resource_search_term: "None".to_owned(),
@@ -86,7 +89,7 @@ impl eframe::App for TemplateApp {
             println!("Picked!");
             
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(dir_str));
-            
+
         } else {
             if let Some(proj_dir) = &self.project_directory {
                 let dir_str = proj_dir.display().to_string();
@@ -160,10 +163,10 @@ impl eframe::App for TemplateApp {
                                     let fname = path.file_name().unwrap().to_os_string().into_string().unwrap();
                         
                                     if ui.button(fname).clicked() {
-                                        let contents: String = fs::read_to_string(path)
-                                            .expect("Should have been able to read script!");
+                                        let contents: String = fs::read_to_string(path).unwrap();
                                             
                                         self.code_editor_content = contents;
+            
                                     }
                                     
                                     
@@ -246,7 +249,16 @@ impl eframe::App for TemplateApp {
                         .stroke(Stroke::new(1.0, separator_color))
                         .show(ui, |ui| {
                             ui.vertical_centered(|ui|{
-                                ui.button("Play");
+                                if ui.button("Play").clicked() {    
+                                    let c_code: CString = CString::new(self.code_editor_content.to_string()).unwrap();
+                                    let c_str  = c_code.as_c_str();
+
+                                    Python::with_gil(|py| {
+                                        if let Err(e) = py.run(c_str, None, None) {
+                                            e.print(py);
+                                        }
+                                    });
+                                };
                             });
                     });
 
