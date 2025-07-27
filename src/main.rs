@@ -23,6 +23,7 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(|cc: &eframe::CreationContext<'_>| Ok(Box::new(redengine_rust::TemplateApp::new(cc)))),
     )
+
 }
 
 // When compiling to web using trunk:

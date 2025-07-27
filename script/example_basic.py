@@ -1,33 +1,36 @@
-import pygame, os, random
+import pygame, os, random, sys
 import numpy as np
-
+import gc
 pygame.init()
 """
 All code given is the bare minimum to safely run code within the engine.
 Removing any code that already exists in not recommended and you WILL run into issues.
 When compiled, parts of code are removed to optimise and simplify the file.
 """
-WIDTH, HEIGHT = 1280, 720
+
+
 
 class TestObject:
-
     def __init__(self):
         self.bool1 = True
         self.array = ['string', True, 100]
         self.changing_attr = 0.0
+        
 
 
 class Main:
 
     def __init__(self, fullscreen=False) ->None:
-        self.display = pygame.display.set_mode((WIDTH, HEIGHT))
+        self.display = pygame.display.set_mode((1280, 720))
         pygame.display.set_caption('Showcase')
         self.run = True
         self.clock = pygame.time.Clock()
         self._engine_mode = False
+        
         """
         Make sure not to remove the super() method above, as it will break the whole script.
         """
+        
         self.display = pygame.display.get_surface()
         if self._engine_mode:
             abspath = os.path.abspath(__file__)
@@ -50,6 +53,8 @@ class Main:
         self.background_colour = pygame.Color(255, 100, 200)
         self.square_rect = self.rect.get_rect()
 
+        self._frame_buffer = pygame.image.tobytes(self.display, "RGBA")
+
     def handle_events(self):
         """
         All your logic for handling events should go here.
@@ -64,6 +69,8 @@ class Main:
                 elif event.key == pygame.K_r:
                     self.background_colour = random.randint(0, 255
                         ), random.randint(0, 255), random.randint(0, 255)
+                elif event.key == pygame.K_f:
+                    print(globals())
             if event.type == pygame.QUIT:
                 self.run = False
 
@@ -83,8 +90,13 @@ class Main:
             if self.angle >= 360:
                 self.angle -= 360
         self.testObject.changing_attr += 0.1
-        
         pygame.display.set_caption(str(round(self.clock.get_fps(), 1)))
+        
+    def test_print(self):
+        print(str(self.angle))
+        
+    def get_frame_buffer(self):
+        return self._frame_buffer
 
     def draw(self):
         """
@@ -96,19 +108,8 @@ class Main:
         self.display.fill(self.background_colour)
         self.display.blit(self.rect, (self.nx, self.ny))
         pygame.display.flip()
+        self._frame_buffer = pygame.image.tobytes(self.display, "RGBA") #self.display.get_buffer().raw
 
-    def upload_frame(self):
-        """Returns RGBA buffer, width, height for external use."""
-        surface = pygame.display.get_surface()
-        buffer = pygame.image.tostring(surface, "RGBA")
-        width, height = surface.get_size()
-        self._last_frame = (buffer, width, height)
-    
-    def get_frame_data(self):
-        """Used from Rust to get the last uploaded frame."""
-        print("grabbed frmae data from python")
-        return self._last_frame
-    
     def test_run(self):
         """Handles the running of the game"""
         while self.run:
@@ -116,17 +117,23 @@ class Main:
             self.handle_events()
             self.update()
             self.draw()
-            self.upload_frame()
+        
+            yield 
         
         pygame.quit()
         sys.exit()
 
-def get_frame_data():
-    print("grabbing frame data")
-    
-    
+
 try:
+    lcls = str(locals())
     game = Main()
-    game.test_run()
+
+    # frame_count = "0"
+    # for index, frame in enumerate(next(source)):
+    #     frame_count = str(index)
+
+
+ 
 except Exception as e:
+    print("python error: ")
     print(e)

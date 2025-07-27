@@ -1,51 +1,59 @@
-use std::{ffi::CString, fs, path::{Path, PathBuf}};
+use std::{ fs, path::PathBuf, sync::OnceLock};
 
-use egui::Stroke;
-use egui_file_dialog::FileDialog;
+
 use pyo3::prelude::*;
 
-#[derive(PartialEq)]
-enum Tab {
-    Scripting,
-    Viewport,
-}
+use egui::{mutex::Mutex, Stroke};
+use egui_file_dialog::FileDialog;
+
+use crate::engine::{python::FRAME_IMAGE, redengine::CentralTab};
+
+
+
+
+
+
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 
 
-
-
 pub struct TemplateApp { // Attempts to load this state if possible
     // #[serde(skip)] // This how you opt-out of serialization of a field
-    // viewport_texture: Option<egui::TextureHandle>,
 
     #[serde(skip)]
     file_dialog: FileDialog,
 
     #[serde(skip)] // This how you opt-out of serialization of a field
-    current_tab: Tab,
-
-    #[serde(skip)] 
+    current_tab: CentralTab,
+    // ------------
     code_editor_content: String,
-
+    // ------------
     last_opened_file: Option<PathBuf>,
     project_directory: Option<PathBuf>,
+    // ------------
     resource_search_term: String,
+    
+    #[serde(skip)]
+    viewport_texture: Option<egui::TextureHandle>,
 }
 
 impl Default for TemplateApp { // Fallback State
     fn default() -> Self {
         Self {
-            file_dialog: FileDialog::new(),
-
-            code_editor_content: "# Hello world!".into(),
+            file_dialog: FileDialog::new(), 
+            // ------------
+            current_tab: CentralTab::Viewport,
+            // ------------
+            code_editor_content: "# Your code".into(),
+            // ------------
             last_opened_file: None,
-            current_tab: Tab::Viewport,
-
             project_directory: None,
-            resource_search_term: "None".to_owned(),
+            // ------------
+            resource_search_term: "".to_owned(),
+            // ------------
+            viewport_texture: None,
         }
     }
 }
@@ -53,17 +61,16 @@ impl Default for TemplateApp { // Fallback State
 impl TemplateApp {
     // App Constructor. Attempts to load program state from previous runs. 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        FRAME_IMAGE.set(Mutex::new(None));
+
         if let Some(storage) = cc.storage {
             eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
 
         } else {
             Default::default()
         }
-
-        
-
-        
     }
 }
 
@@ -73,16 +80,14 @@ impl eframe::App for TemplateApp {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
-
-
-
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
+        // Gets the color of seperators, for frames and such.
         let separator_color = ctx.style().visuals.widgets.noninteractive.bg_stroke.color;
-        
+        let mut can_run_code = false;
 
+
+        // Use the file dialog to update the project path and window title.
         if let Some(proj_dir) = self.file_dialog.take_picked() {
             self.project_directory = Some(proj_dir.to_path_buf());
             let dir_str = proj_dir.display().to_string();
@@ -90,7 +95,7 @@ impl eframe::App for TemplateApp {
             
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(dir_str));
 
-        } else {
+        } else { // Use the last opened project and update the window title.
             if let Some(proj_dir) = &self.project_directory {
                 let dir_str = proj_dir.display().to_string();
 
@@ -99,14 +104,12 @@ impl eframe::App for TemplateApp {
         }
 
         
-    
         egui::TopBottomPanel::top("Program Menu")
             .show(ctx, |ui| {
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button("Project", |ui| {
                         if ui.button("Open Project").clicked() {
                             // will Load a project from a directory. 
-
                             self.file_dialog.pick_directory();
 
                         }
@@ -181,8 +184,8 @@ impl eframe::App for TemplateApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     for (tab, label) in [
-                        (Tab::Viewport, "Viewport"),
-                        (Tab::Scripting, "Scripting"),
+                        (CentralTab::Viewport, "Viewport"),
+                        (CentralTab::Scripting, "Scripting"),
                     ] {
                         if ui.selectable_label(self.current_tab == tab, label).clicked() {
                             self.current_tab = tab;
@@ -194,7 +197,7 @@ impl eframe::App for TemplateApp {
 
 
                 match self.current_tab {
-                Tab::Scripting => {
+                CentralTab::Scripting => {
 
                     let mut theme =
                         egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx(), ui.style());
@@ -240,7 +243,7 @@ impl eframe::App for TemplateApp {
 
 
                 },
-                Tab::Viewport => {
+                CentralTab::Viewport => {
 
                     egui::Frame::none()
                         .fill(egui::Color32::from_gray(16))
@@ -250,21 +253,44 @@ impl eframe::App for TemplateApp {
                         .show(ui, |ui| {
                             ui.vertical_centered(|ui|{
                                 if ui.button("Play").clicked() {    
-                                    let c_code: CString = CString::new(self.code_editor_content.to_string()).unwrap();
-                                    let c_str  = c_code.as_c_str();
-
-                                    Python::with_gil(|py| {
-                                        if let Err(e) = py.run(c_str, None, None) {
-                                            e.print(py);
-                                        }
-                                    });
-                                };
+                                    crate::engine::python::run_code_threaded(&self.code_editor_content);
+                                }
                             });
                     });
 
-                    ui.vertical_centered(|ui|{
-                        ui.image("file://assets/example.png");
-                    });
+
+                                        
+                   
+
+                    if let Some(lock) = FRAME_IMAGE.get() {
+                        let guard = lock.lock();
+                        if let Some(image) = &*guard {
+                            if let Some(vp_texture) = &mut self.viewport_texture {
+                                // If it exists and is assigned
+                                vp_texture.set(image.clone(), Default::default());
+
+                            } else {
+                                self.viewport_texture = Some(ctx.load_texture(
+                                    "viewport_texture",
+                                    image.clone(),
+                                    Default::default(),
+                                ));
+                            }
+                        }   
+                    }
+
+                    ui.centered_and_justified(|ui|{
+                        if let Some(tex) = &self.viewport_texture {
+                            ui.image((tex.id(), tex.size_vec2()));
+                        } else {
+                            ui.label("No image available");
+                        }
+                    });  
+
+
+
+
+                    
 
 
 
@@ -278,18 +304,9 @@ impl eframe::App for TemplateApp {
 
                 
         });
-        
 
         // Misc
         self.file_dialog.update(ctx);
 
     }
-
-
-
-
-
-
-
 }
-
