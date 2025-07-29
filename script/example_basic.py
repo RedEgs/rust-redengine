@@ -21,8 +21,21 @@ class TestObject:
 class Main:
 
     def __init__(self, fullscreen=False) ->None:
-        self.display = pygame.display.set_mode((1280, 720))
-        pygame.display.set_caption('Showcase')
+        # self._hwnd = None
+        # #if len(sys.argv) > 1:
+        # # self._hwnd = int(sys.argv[1])
+        # # os.environ['SDL_WINDOWID'] = str(self._hwnd)
+        
+        # os.environ['SDL_VIDEO_WINDOW_POS'] = "%d,%d" % (-100000, -100000)
+        # self.display = pygame.display.set_mode((1280, 720), pygame.NOFRAME)
+            
+            
+        #self.display = pygame.display.set_mode((1280, 720))
+        # pygame.display.set_caption('Showcase')
+        self.window = pygame.Window(size=(1280, 720), position=(10000, 100000), opengl=True)
+        
+        
+        
         self.run = True
         self.clock = pygame.time.Clock()
         self._engine_mode = False
@@ -31,11 +44,13 @@ class Main:
         Make sure not to remove the super() method above, as it will break the whole script.
         """
         
-        self.display = pygame.display.get_surface()
+        self.display = self.window.get_surface()
+        
         if self._engine_mode:
             abspath = os.path.abspath(__file__)
             dname = os.path.dirname(abspath)
             os.chdir(dname)
+            
         self.angle = 0
         self.rotate = True
         self.rotation_speed = 1
@@ -90,7 +105,7 @@ class Main:
             if self.angle >= 360:
                 self.angle -= 360
         self.testObject.changing_attr += 0.1
-        pygame.display.set_caption(str(round(self.clock.get_fps(), 1)))
+        #self.window.set_caption(str(round(self.clock.get_fps(), 1)))
         
     def test_print(self):
         print(str(self.angle))
@@ -107,7 +122,7 @@ class Main:
         """
         self.display.fill(self.background_colour)
         self.display.blit(self.rect, (self.nx, self.ny))
-        pygame.display.flip()
+        self.window.flip()
         self._frame_buffer = pygame.image.tobytes(self.display, "RGBA") #self.display.get_buffer().raw
 
     def test_run(self):
@@ -121,8 +136,13 @@ class Main:
             yield 
         
         pygame.quit()
-        sys.exit()
-
+        #sys.exit()
+        
+    def quit(self):
+        self.run = False
+        #sys.exit()
+        
+        
 
 try:
     lcls = str(locals())

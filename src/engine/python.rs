@@ -1,12 +1,20 @@
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::collections::VecDeque;
 
 use egui::{mutex::Mutex, ColorImage};
-use pyo3::{prelude::*, types::{PyDict, PyIterator, PyTuple}};
-use pyo3::{types::PyBytes, PyAny};
+
+use pyo3::{prelude::*, types::PyIterator};
+use pyo3::types::PyBytes;
 
 
 // static GAME_INSTANCE: OnceLock<Py<PyAny>> = OnceLock::new();
 pub static FRAME_IMAGE: OnceLock<Mutex<Option<ColorImage>>> = OnceLock::new();
+
+lazy_static::lazy_static! {
+    static ref INSTRUCTION_QUEUE: Arc<std::sync::Mutex<VecDeque<Instruction>>> = Arc::new(std::sync::Mutex::new(VecDeque::new()));
+}
+pub type Instruction = Box<dyn Fn(Python) + Send + 'static>;
+
 
 pub fn run_code_threaded(code_string: &str) {
     let mut code = String::new();
@@ -17,7 +25,7 @@ pub fn run_code_threaded(code_string: &str) {
 
     std::thread::spawn(move || {
         Python::with_gil(|py| {
-            Python::run_bound(py, &code, None, None);
+            let _ = Python::run_bound(py, &code, None, None);
           
             let main_module = PyModule::import(py, "__main__").expect("Import __main__ failed");
             let game = main_module.getattr("game").unwrap();
@@ -28,6 +36,11 @@ pub fn run_code_threaded(code_string: &str) {
                     let mut gen_iter = PyIterator::from_object(generator).unwrap();
 
                     loop { // or loop forever
+                        
+                        if let Some(task) = INSTRUCTION_QUEUE.lock().unwrap().pop_front() {
+                            task(py); // run inside current Python interpreter
+                        }
+
                         let pool = unsafe { py.new_pool() };
 
                         match gen_iter.next() {
@@ -46,14 +59,12 @@ pub fn run_code_threaded(code_string: &str) {
 
                                 drop(pool);
                             }
-                            Some(Err(e)) => {
-                                e.print(py);
-                                break;
-                            }
-                            None => {
-                                 // println!("Generator finished");
-                                break;
-                            }
+                            // Some(Err(e)) => {
+                            //     e.print(py);
+                            //     break;
+                            // }
+                            None => break,
+                            
                         }
                     }
                 }
@@ -63,7 +74,19 @@ pub fn run_code_threaded(code_string: &str) {
             }
             
         });
+
+        println!("Gracefully closing thread.")
     });
+    
+
+}
+
+pub fn queue_python_instruction<F>(func: F)
+where
+    F: Fn(Python) + Send + 'static,
+{
+    let mut queue = INSTRUCTION_QUEUE.lock().unwrap();
+    queue.push_back(Box::new(func));
 }
 
 // pub fn call_game_method(method_name: &str) {

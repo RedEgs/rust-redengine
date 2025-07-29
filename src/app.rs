@@ -1,12 +1,10 @@
-use std::{ fs, path::PathBuf, sync::OnceLock};
+use std::path::PathBuf;
 
-
-use pyo3::prelude::*;
-
-use egui::{mutex::Mutex, Stroke};
+use egui::{mutex::Mutex, Color32};
+use egui_dock::{DockArea, DockState, Style};
 use egui_file_dialog::FileDialog;
 
-use crate::engine::{python::FRAME_IMAGE, redengine::CentralTab};
+use crate::engine::{self, python::FRAME_IMAGE, redengine::{GameState, Project}, ui::CentralTabViewer};
 
 
 
@@ -25,35 +23,40 @@ pub struct TemplateApp { // Attempts to load this state if possible
     #[serde(skip)]
     file_dialog: FileDialog,
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
-    current_tab: CentralTab,
+    #[serde(skip)]
+    central_dock_state: DockState<crate::engine::ui::CentralPanelTab>,
+    #[serde(skip)]
+    side_dock_state: DockState<crate::engine::ui::SidePanelTab>,
     // ------------
     code_editor_content: String,
     // ------------
     last_opened_file: Option<PathBuf>,
-    project_directory: Option<PathBuf>,
+    project: Project,
     // ------------
     resource_search_term: String,
-    
     #[serde(skip)]
     viewport_texture: Option<egui::TextureHandle>,
-}
+    #[serde(skip)]
+    game_state: GameState
+}   
 
 impl Default for TemplateApp { // Fallback State
     fn default() -> Self {
         Self {
             file_dialog: FileDialog::new(), 
             // ------------
-            current_tab: CentralTab::Viewport,
+            central_dock_state: DockState::new(vec![engine::ui::CentralPanelTab::Viewport, engine::ui::CentralPanelTab::Scripting]),
+            side_dock_state: DockState::new(vec![engine::ui::SidePanelTab::FileExplorer]),
             // ------------
             code_editor_content: "# Your code".into(),
             // ------------
             last_opened_file: None,
-            project_directory: None,
+            project: Project::new(),
             // ------------
             resource_search_term: "".to_owned(),
             // ------------
             viewport_texture: None,
+            game_state: GameState { running: false, size: [1280, 720]}
         }
     }
 }
@@ -61,10 +64,17 @@ impl Default for TemplateApp { // Fallback State
 impl TemplateApp {
     // App Constructor. Attempts to load program state from previous runs. 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-
+        // Init stuff :---
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        FRAME_IMAGE.set(Mutex::new(None));
+        let _ = FRAME_IMAGE.set(Mutex::new(None));
 
+        // Enable phosphor fonts for icons.
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        cc.egui_ctx.set_fonts(fonts);
+
+
+        // Load state or revert to default.
         if let Some(storage) = cc.storage {
             eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
 
@@ -77,6 +87,7 @@ impl TemplateApp {
 impl eframe::App for TemplateApp {
     /// Called by the framework to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.project.loaded = false;
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
@@ -84,29 +95,49 @@ impl eframe::App for TemplateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Gets the color of seperators, for frames and such.
         let separator_color = ctx.style().visuals.widgets.noninteractive.bg_stroke.color;
-        let mut can_run_code = false;
-
-
-        // Use the file dialog to update the project path and window title.
-        if let Some(proj_dir) = self.file_dialog.take_picked() {
-            self.project_directory = Some(proj_dir.to_path_buf());
-            let dir_str = proj_dir.display().to_string();
-            println!("Picked!");
-            
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(dir_str));
-
-        } else { // Use the last opened project and update the window title.
-            if let Some(proj_dir) = &self.project_directory {
-                let dir_str = proj_dir.display().to_string();
-
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(dir_str));
-            } 
-        }
 
         
+        // Use the file dialog to update the project path and window title.
+        if let Some(proj_dir) = self.file_dialog.take_picked() {
+            self.project.project_path = Some(proj_dir.clone());
+            let dir_str = proj_dir.display().to_string();
+            
+            
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(dir_str.clone()));
+        
+            // if !self.project.loaded {
+            //     self.project = Project::new();
+            // } 
+        
+            self.project.root_item = Project::load_files(proj_dir.clone());
+            self.project.loaded = true;
+
+            println!("{}", self.project)
+
+        } else { // Use the last opened project and update the window title.
+            if !self.project.loaded {
+                if let Some(proj_dir) = &self.project.project_path {
+                    
+                    self.project.root_item = Project::load_files(proj_dir.clone());
+                    self.project.loaded = true;
+
+                    let dir_str = proj_dir.display().to_string();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(dir_str));
+                
+                } 
+            }
+        }
+
         egui::TopBottomPanel::top("Program Menu")
             .show(ctx, |ui| {
                 egui::MenuBar::new().ui(ui, |ui| {
+                    ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::same(0);
+                    ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(0);
+                    ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(0);
+                    ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::same(0);
+
+
+
                     ui.menu_button("Project", |ui| {
                         if ui.button("Open Project").clicked() {
                             // will Load a project from a directory. 
@@ -136,132 +167,25 @@ impl eframe::App for TemplateApp {
             .show(ctx, | ui | {
                 ui.add_space(6.0);
 
-                egui::Frame::none()
-                    .fill(egui::Color32::from_gray(32))
-                    .show(ui, |ui| {
-                        ui.vertical_centered( |ui: &mut egui::Ui|{
-                            ui.heading("Resource Panel");
-                        });
-                });
-                ui.separator();
-            
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.resource_search_term)
-                    .hint_text("Search...")
-                );
+                let mut viewer = engine::ui::SideTabViewer {
+                    project: &mut self.project,
+                    code_editor_content: &mut self.code_editor_content,
+                    egui_ctx: ctx,
+                }; let mut style = Style::from_egui(ui.style());
+                style.tab_bar.bg_fill = Color32::from_gray(22);   
 
-                egui::Frame::none()
-                    .inner_margin(6.0)
-                    .fill(egui::Color32::from_gray(32))
-                    .stroke(Stroke::new(1.0, separator_color))
-                    .show(ui, |ui| {
-                            ui.collapsing("Project Files", |ui|{
-                            ui.set_min_width(ui.available_width()); 
-                            if let Some(proj_dir) = &self.project_directory {
-                                let dir_str = proj_dir.display().to_string();
-                                
-                                let paths = fs::read_dir(dir_str).unwrap();
-                                for path in paths {
-                                    let path = path.unwrap().path();
-                                    let fname = path.file_name().unwrap().to_os_string().into_string().unwrap();
-                        
-                                    if ui.button(fname).clicked() {
-                                        let contents: String = fs::read_to_string(path).unwrap();
-                                            
-                                        self.code_editor_content = contents;
-            
-                                    }
-                                    
-                                    
-                                }
-                            }
-                        });
-                    });
+                DockArea::new(&mut self.side_dock_state)
+                    .style(style)
+                    .show_close_buttons(false)
+                    .show_leaf_collapse_buttons(false)
+                    .show_leaf_close_all_buttons(false)
+                    .show_inside(ui, &mut viewer);
             });
 
         
         egui::CentralPanel::default()
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    for (tab, label) in [
-                        (CentralTab::Viewport, "Viewport"),
-                        (CentralTab::Scripting, "Scripting"),
-                    ] {
-                        if ui.selectable_label(self.current_tab == tab, label).clicked() {
-                            self.current_tab = tab;
-                        }
-                    }
-                });
-                ui.separator();
-   
-
-
-                match self.current_tab {
-                CentralTab::Scripting => {
-
-                    let mut theme =
-                        egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx(), ui.style());
-                    ui.collapsing("Theme", |ui| {
-                        ui.group(|ui| {
-                            theme.ui(ui);
-                            theme.clone().store_in_memory(ui.ctx());
-                        });
-                    });
-
-                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                        let mut layout_job = egui_extras::syntax_highlighting::highlight(
-                            ui.ctx(),
-                            ui.style(),
-                            &theme,
-                            buf.as_str(),
-                            "Python",
-                        );
-                        layout_job.wrap.max_width = wrap_width;
-                        ui.fonts(|f| f.layout_job(layout_job))
-                    };
-
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.code_editor_content)
-                                .font(egui::TextStyle::Monospace) // for cursor height
-                                .code_editor()
-                                .desired_rows(10)
-                                .lock_focus(true)
-                                .desired_width(f32::INFINITY)
-                                .layouter(&mut layouter),
-                        );
-                    });
-
-
-
-
-
-
-
-
-
-
-                },
-                CentralTab::Viewport => {
-
-                    egui::Frame::none()
-                        .fill(egui::Color32::from_gray(16))
-                        .inner_margin(6.0)
-                        .corner_radius(4.0)
-                        .stroke(Stroke::new(1.0, separator_color))
-                        .show(ui, |ui| {
-                            ui.vertical_centered(|ui|{
-                                if ui.button("Play").clicked() {    
-                                    crate::engine::python::run_code_threaded(&self.code_editor_content);
-                                }
-                            });
-                    });
-
-
-                                        
-                   
-
+                if self.game_state.running {  // Handle, Assign and Update the viewport texture
                     if let Some(lock) = FRAME_IMAGE.get() {
                         let guard = lock.lock();
                         if let Some(image) = &*guard {
@@ -278,31 +202,24 @@ impl eframe::App for TemplateApp {
                             }
                         }   
                     }
+                }
 
-                    ui.centered_and_justified(|ui|{
-                        if let Some(tex) = &self.viewport_texture {
-                            ui.image((tex.id(), tex.size_vec2()));
-                        } else {
-                            ui.label("No image available");
-                        }
-                    });  
+                let mut viewer = CentralTabViewer {
+                    // code_editor: &mut self.code_editor,
+                    viewport_texture: &mut self.viewport_texture,
+                    code_editor_content: &mut self.code_editor_content,
+                    game_state: &mut self.game_state,
+                    egui_ctx: ctx,
+                }; let mut style = Style::from_egui(ui.style());
+                style.tab_bar.bg_fill = Color32::from_gray(22);   
 
-
-
-
-                    
-
-
-
-
-
-
-
-
-                }}
-
-
-                
+                DockArea::new(&mut self.central_dock_state)
+                    .style(style)
+                    .show_close_buttons(false)
+                    .show_leaf_collapse_buttons(false)
+                    .show_leaf_close_all_buttons(false)
+                    .show_inside(ui, &mut viewer);
+    
         });
 
         // Misc
